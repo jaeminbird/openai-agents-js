@@ -223,6 +223,13 @@ export class OpenAIResponsesCompactionSession
           );
           return null;
         }
+        if (hasUnresolvedToolCalls(history)) {
+          // A paused approval leaves calls without outputs. responses.compact
+          // rejects them, and compacting them away would orphan the outputs
+          // the resumed turn appends, so wait until every call is answered.
+          logger.debug('skip: history has tool calls awaiting outputs');
+          return null;
+        }
         // Keep decisions tied to the actual complete snapshot, not a stale candidate cache.
         this.sessionItems = history;
         this.compactionCandidateItems = selectCompactionCandidateItems(history);
@@ -830,4 +837,62 @@ function areAgentItemsEqual(
   right: AgentInputItem[],
 ): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+const TOOL_RESULT_TYPE_BY_CALL_TYPE: Record<string, string> = {
+  function_call: 'function_call_result',
+  computer_call: 'computer_call_result',
+  shell_call: 'shell_call_output',
+  apply_patch_call: 'apply_patch_call_output',
+};
+
+function hasUnresolvedToolCalls(items: AgentInputItem[]): boolean {
+  const pending = new Map<string, number>();
+  const bump = (key: string, delta: number) =>
+    pending.set(key, (pending.get(key) ?? 0) + delta);
+  for (const item of items) {
+    const candidate = item as {
+      type?: unknown;
+      callId?: unknown;
+      id?: unknown;
+      name?: unknown;
+      providerData?: {
+        type?: unknown;
+        id?: unknown;
+        approval_request_id?: unknown;
+      };
+    };
+    if (typeof candidate.type !== 'string') {
+      continue;
+    }
+    const resultType = TOOL_RESULT_TYPE_BY_CALL_TYPE[candidate.type];
+    if (resultType && typeof candidate.callId === 'string') {
+      bump(`${resultType}:${candidate.callId}`, 1);
+      continue;
+    }
+    if (
+      Object.values(TOOL_RESULT_TYPE_BY_CALL_TYPE).includes(candidate.type) &&
+      typeof candidate.callId === 'string'
+    ) {
+      bump(`${candidate.type}:${candidate.callId}`, -1);
+      continue;
+    }
+    if (candidate.type !== 'hosted_tool_call') {
+      continue;
+    }
+    const providerData = candidate.providerData;
+    if (
+      candidate.name === 'mcp_approval_request' ||
+      providerData?.type === 'mcp_approval_request'
+    ) {
+      const id = providerData?.id ?? candidate.id;
+      if (typeof id === 'string') bump(`mcp_approval:${id}`, 1);
+    } else if (
+      candidate.name === 'mcp_approval_response' &&
+      typeof providerData?.approval_request_id === 'string'
+    ) {
+      bump(`mcp_approval:${providerData.approval_request_id}`, -1);
+    }
+  }
+  return [...pending.values()].some((count) => count > 0);
 }
