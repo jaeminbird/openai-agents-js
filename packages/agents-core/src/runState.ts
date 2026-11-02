@@ -4308,6 +4308,14 @@ function selectPendingDeclarativeTerminalCandidate(
   });
 }
 
+function getCurrentResponseFunctionCallIds(
+  state: RunState<any, any>,
+): string[] {
+  return (state._lastProcessedResponse?.functions ?? []).flatMap((run) =>
+    run.toolCall.callId ? [run.toolCall.callId] : [],
+  );
+}
+
 function ownsPendingTerminalToolFinalization(
   state: RunState<any, any>,
   pending: PendingSessionWrite,
@@ -4336,6 +4344,36 @@ function ownsPendingTerminalToolFinalization(
     pending.alreadyPersistedCount,
     pending.persistedItemCount,
   );
+  const liveProducer =
+    options.allowUnhydratedTerminalToolStep === true
+      ? undefined
+      : pendingSessionWriteTerminalProducers.get(state);
+  // A resumed approval turn can finalize on a sibling tool result that was already persisted
+  // when the turn paused. While the live producer is available, such outputs may own the
+  // terminal output when they answer a call from the current model response. Restored
+  // (serialized) checkpoints keep the stricter pending-range proof.
+  const currentResponseCallIds = getCurrentResponseFunctionCallIds(state);
+  const isTerminalCandidateIndex = (generatedItemIndex: number) => {
+    if (
+      generatedItemIndex >= pending.alreadyPersistedCount &&
+      generatedItemIndex < pending.persistedItemCount
+    ) {
+      return true;
+    }
+    if (
+      !liveProducer ||
+      generatedItemIndex < 0 ||
+      generatedItemIndex >= pending.alreadyPersistedCount
+    ) {
+      return false;
+    }
+    const item = state._generatedItems[generatedItemIndex];
+    const callId =
+      item instanceof RunToolCallOutputItem
+        ? getCompletionOutputCallId(item, state._currentAgent)
+        : undefined;
+    return callId !== undefined && currentResponseCallIds.includes(callId);
+  };
   if (
     pendingGeneratedItems.some((item) => {
       const callId = getCompletionOutputCallId(item, state._currentAgent);
@@ -4349,10 +4387,6 @@ function ownsPendingTerminalToolFinalization(
   ) {
     return false;
   }
-  const liveProducer =
-    options.allowUnhydratedTerminalToolStep === true
-      ? undefined
-      : pendingSessionWriteTerminalProducers.get(state);
   if (provenance.behavior === 'function') {
     return Boolean(
       liveProducer &&
@@ -4365,8 +4399,7 @@ function ownsPendingTerminalToolFinalization(
         const callId = liveProducer.resultCallIds[index];
         return (
           callId !== undefined &&
-          generatedItemIndex >= pending.alreadyPersistedCount &&
-          generatedItemIndex < pending.persistedItemCount &&
+          isTerminalCandidateIndex(generatedItemIndex) &&
           completedInvocations?.has(callId)
         );
       }),
@@ -4378,8 +4411,7 @@ function ownsPendingTerminalToolFinalization(
   if (
     !selectedCallId ||
     selectedGeneratedItemIndex === undefined ||
-    selectedGeneratedItemIndex < pending.alreadyPersistedCount ||
-    selectedGeneratedItemIndex >= pending.persistedItemCount
+    !isTerminalCandidateIndex(selectedGeneratedItemIndex)
   ) {
     return false;
   }
@@ -4409,8 +4441,7 @@ function ownsPendingTerminalToolFinalization(
       const generatedItemIndex = state._generatedItems.indexOf(item);
       return candidate &&
         liveProducer.resultCallIds[index] === candidate.callId &&
-        generatedItemIndex >= pending.alreadyPersistedCount &&
-        generatedItemIndex < pending.persistedItemCount
+        isTerminalCandidateIndex(generatedItemIndex)
         ? candidate
         : undefined;
     });

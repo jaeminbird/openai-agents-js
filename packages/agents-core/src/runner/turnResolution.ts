@@ -1010,6 +1010,70 @@ async function resolveInvalidFinalOutput<
   }, isDataRedactedError(args.error));
 }
 
+function getFunctionResultCallId(
+  result: FunctionToolResult<any>,
+): string | undefined {
+  const rawItem = result.runItem?.rawItem as { callId?: unknown } | undefined;
+  return typeof rawItem?.callId === 'string' ? rawItem.callId : undefined;
+}
+
+function collectInterruptedTurnFunctionResults<TContext>(
+  agent: Agent<TContext, any>,
+  processedResponse: ProcessedResponse<TContext>,
+  originalPreStepItems: RunItem[],
+  functionResults: FunctionToolResult<TContext>[],
+): FunctionToolResult<TContext>[] {
+  const resultsByCallId = new Map<string, FunctionToolResult<TContext>>();
+  for (const result of functionResults) {
+    const callId = getFunctionResultCallId(result);
+    if (callId) {
+      resultsByCallId.set(callId, result);
+    }
+  }
+  const completedOutputsByCallId = new Map<string, RunToolCallOutputItem>();
+  for (const item of originalPreStepItems) {
+    if (
+      item instanceof RunToolCallOutputItem &&
+      item.agent === agent &&
+      item.rawItem.type === 'function_call_result' &&
+      item.rawItem.callId
+    ) {
+      completedOutputsByCallId.set(item.rawItem.callId, item);
+    }
+  }
+  const ordered: FunctionToolResult<TContext>[] = [];
+  const used = new Set<FunctionToolResult<TContext>>();
+  const seenCallIds = new Set<string>();
+  for (const run of processedResponse.functions) {
+    const callId = run.toolCall.callId;
+    if (!callId || seenCallIds.has(callId)) {
+      continue;
+    }
+    seenCallIds.add(callId);
+    const result = resultsByCallId.get(callId);
+    if (result) {
+      ordered.push(result);
+      used.add(result);
+      continue;
+    }
+    const completedOutput = completedOutputsByCallId.get(callId);
+    if (completedOutput) {
+      ordered.push({
+        type: 'function_output',
+        tool: run.tool,
+        output: completedOutput.output,
+        runItem: completedOutput,
+      });
+    }
+  }
+  for (const result of functionResults) {
+    if (!used.has(result)) {
+      ordered.push(result);
+    }
+  }
+  return ordered;
+}
+
 /**
  * @internal
  * Continues a turn that was previously interrupted waiting for tool approval. Executes the now
@@ -1368,11 +1432,20 @@ export async function resolveInterruptedTurn<TContext>(
     return handoffStep;
   }
 
+  // Completed siblings are skipped (suppressed) during resumed execution, but their results
+  // still take part in the interrupted turn's toolUseBehavior decision, in the model's call order.
+  const turnFunctionResults = collectInterruptedTurnFunctionResults(
+    agent,
+    processedResponse as ProcessedResponse<TContext>,
+    originalPreStepItems,
+    functionResults,
+  );
+
   const completedStep = await maybeCompleteTurnFromToolResults({
     agent,
     runner,
     state,
-    functionResults,
+    functionResults: turnFunctionResults,
     originalInput,
     newResponse,
     preStepItems,

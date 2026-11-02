@@ -1426,7 +1426,7 @@ describe('resumed Session write recovery', () => {
   );
 
   it.each<RunMode>(['non_streamed', 'streamed'])(
-    'rejects an ambiguous serialized sequential-approval terminal $mode append and recovers it live',
+    'recovers a serialized sequential-approval terminal $mode append',
     async (mode) => {
       const firstExecute = vi.fn(async () => 'first-result');
       const secondExecute = vi.fn(async () => 'second-result');
@@ -1489,20 +1489,22 @@ describe('resumed Session write recovery', () => {
         partial.state._pendingSessionWrite?.terminalToolFinalization,
       ).toMatchObject({
         behavior: 'stop_on_first_tool',
-        selectedCallId: 'second-approval-call',
-        finalOutput: 'second-result',
+        selectedCallId: 'first-approval-call',
+        finalOutput: 'first-result',
       });
 
-      await expect(
-        RunState.fromString(agent, partial.state.toString()),
-      ).rejects.toThrow(/pending Session write is invalid/);
-      const completed = await runOnce(mode, agent, partial.state, session);
+      // The selected first result is now provable from the serialized checkpoint.
+      const restored = await RunState.fromString(
+        agent,
+        partial.state.toString(),
+      );
+      const completed = await runOnce(mode, agent, restored, session);
 
-      expect(completed.finalOutput).toBe('second-result');
+      expect(completed.finalOutput).toBe('first-result');
       expect(firstExecute).toHaveBeenCalledTimes(1);
       expect(secondExecute).toHaveBeenCalledTimes(1);
       expect(model.calls).toHaveLength(1);
-      expect(partial.state._pendingSessionWrite).toBeUndefined();
+      expect(restored._pendingSessionWrite).toBeUndefined();
     },
   );
 
@@ -1767,7 +1769,7 @@ describe('resumed Session write recovery', () => {
         first.state._pendingSessionWrite?.terminalToolFinalization;
       expect(finalization).toMatchObject({
         behavior: 'function',
-        finalOutput: 'callback:approved-result',
+        finalOutput: 'callback:immediate-result,approved-result',
       });
       await expect(
         RunState.fromString(agent, first.state.toString()),

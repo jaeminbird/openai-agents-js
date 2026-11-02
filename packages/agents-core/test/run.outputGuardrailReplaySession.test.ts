@@ -1192,7 +1192,7 @@ describe('output guardrails with Session persistence', () => {
 
       if (verdict === 'pass') {
         const completed = await runOnce(partial.state);
-        expect(completed.finalOutput).toBe('second approval secret');
+        expect(completed.finalOutput).toBe('first partial approval secret');
         expect(
           completed.state._toolOutputGuardrailResults[0]?.output.outputInfo,
         ).toBe('first approval tool guardrail secret');
@@ -1489,7 +1489,7 @@ describe('output guardrails with Session persistence', () => {
         verdict === 'session' ? session : undefined,
       );
 
-      expect(completed.finalOutput).toBe('accepted second approval output');
+      expect(completed.finalOutput).toBe('accepted first approval output');
       expect(firstExecute).toHaveBeenCalledTimes(1);
       expect(secondExecute).toHaveBeenCalledTimes(1);
       expect(model.calls).toHaveLength(1);
