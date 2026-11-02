@@ -15,6 +15,7 @@ import {
 } from '@openai/agents-core';
 import { getProviderDataWithoutReservedKeys } from './utils/providerData';
 import logger from './logger';
+import { getReasoningField } from './openaiChatCompletionsReasoning';
 
 const CHAT_COMPLETIONS_FUNCTION_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const OMITTED_TOOL_OUTPUT_PLACEHOLDER = '[tool output omitted]';
@@ -26,6 +27,7 @@ type ItemsToMessagesOptions = {
 type ChatCompletionAssistantMessageWithReasoning =
   ChatCompletionAssistantMessageParam & {
     reasoning?: string;
+    reasoning_content?: string;
   };
 
 export function convertToolChoice(
@@ -317,7 +319,7 @@ export function itemsToMessages(
       !pending ||
       pending.content !== null ||
       (pending.tool_calls && pending.tool_calls.length > 0) ||
-      !('reasoning' in pending)
+      !('reasoning' in pending || 'reasoning_content' in pending)
     ) {
       return undefined;
     }
@@ -368,6 +370,16 @@ export function itemsToMessages(
                 reasoning:
                   pendingReasoningMsg?.reasoning ??
                   pendingAssistantToolCallMessage?.reasoning,
+              }
+            : {}),
+          ...(typeof (
+            pendingReasoningMsg?.reasoning_content ??
+            pendingAssistantToolCallMessage?.reasoning_content
+          ) === 'string'
+            ? {
+                reasoning_content:
+                  pendingReasoningMsg?.reasoning_content ??
+                  pendingAssistantToolCallMessage?.reasoning_content,
               }
             : {}),
           ...getProviderDataWithoutReservedKeys(providerData, [
@@ -437,7 +449,7 @@ export function itemsToMessages(
       const asst = ensureAssistantMessage();
       // Some third-party providers support reasoning on assistant messages even
       // though it is not part of the official Chat Completions API type.
-      asst.reasoning = item.rawContent?.[0]?.text;
+      asst[getReasoningField(item)] = item.rawContent?.[0]?.text;
       continue;
     } else if (item.type === 'hosted_tool_call') {
       if (item.name === 'file_search_call') {

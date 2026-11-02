@@ -50,6 +50,11 @@ import {
 } from '@openai/agents-core/utils/internal';
 import { FAKE_ID } from './openaiItemIds';
 import {
+  CHAT_COMPLETIONS_REASONING_FIELDS,
+  type ChatCompletionsReasoningField,
+  createReasoningText,
+} from './openaiChatCompletionsReasoning';
+import {
   createTruncatedEmptyChatCompletionError,
   isTruncatedEmptyChatCompletion,
   isTruncatedEmptyChatCompletionError,
@@ -92,19 +97,22 @@ function normalizeRequestId(requestId: unknown): string | undefined {
 
 // Some Chat Completions API compatible providers return a reasoning property on the message
 // If that's the case we handle them separately
-type OpenAIMessageWithReasoning =
-  OpenAI.Chat.Completions.ChatCompletionMessage & {
-    reasoning: string;
-  };
-
-function hasReasoningContent(
+/**
+ * Third-party providers return reasoning under one of two non-standard keys:
+ * `reasoning` (for example OpenRouter and Ollama) or `reasoning_content` (for
+ * example DeepSeek, Qwen and Kimi). Providers that use `reasoning_content`
+ * require the same key on replayed assistant tool-call messages.
+ */
+function getReasoningContent(
   message: OpenAI.Chat.Completions.ChatCompletionMessage,
-): message is OpenAIMessageWithReasoning {
-  return (
-    'reasoning' in message &&
-    typeof message.reasoning === 'string' &&
-    message.reasoning !== ''
-  );
+): { text: string; field: ChatCompletionsReasoningField } | undefined {
+  for (const field of CHAT_COMPLETIONS_REASONING_FIELDS) {
+    const value = (message as unknown as Record<string, unknown>)[field];
+    if (typeof value === 'string' && value !== '') {
+      return { text: value, field };
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -226,7 +234,8 @@ export class OpenAIChatCompletionsModel implements Model {
                 typeof normalizedMessage.refusal === 'string' &&
                 normalizedMessage.refusal.length > 0,
               hasAudio: normalizedMessage.audio != null,
-              hasReasoning: hasReasoningContent(normalizedMessage),
+              hasReasoning:
+                getReasoningContent(normalizedMessage) !== undefined,
               hasFunctionCall: Boolean(
                 normalizedMessage.tool_calls?.some(
                   (toolCall) => toolCall.type === 'function',
@@ -258,16 +267,12 @@ export class OpenAIChatCompletionsModel implements Model {
     if (response.choices && response.choices[0]) {
       const message = response.choices[0].message;
 
-      if (hasReasoningContent(message)) {
+      const reasoning = getReasoningContent(message);
+      if (reasoning) {
         output.push({
           type: 'reasoning',
           content: [],
-          rawContent: [
-            {
-              type: 'reasoning_text',
-              text: message.reasoning,
-            },
-          ],
+          rawContent: [createReasoningText(reasoning.text, reasoning.field)],
         });
       }
       const hasContent =

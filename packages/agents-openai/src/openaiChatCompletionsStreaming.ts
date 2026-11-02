@@ -8,6 +8,11 @@ import {
   ChatCompletionChunk,
 } from 'openai/resources/chat';
 import { FAKE_ID } from './openaiItemIds';
+import {
+  CHAT_COMPLETIONS_REASONING_FIELDS,
+  type ChatCompletionsReasoningField,
+  createReasoningText,
+} from './openaiChatCompletionsReasoning';
 import { OPENAI_CHAT_COMPLETIONS_RAW_MODEL_EVENT_SOURCE } from './rawModelEvents';
 import logger from './logger';
 import {
@@ -29,6 +34,7 @@ type StreamingState = {
   function_calls: Record<number, protocol.FunctionCallItem>;
   ignored_tool_call_indexes: Set<number>;
   reasoning: string;
+  reasoningField: ChatCompletionsReasoningField;
   finishReason: ChatCompletion['choices'][number]['finish_reason'] | null;
   hasWarnedUnsupportedChoice: boolean;
 };
@@ -154,6 +160,7 @@ export async function* convertChatCompletionsStreamToResponses(
     function_calls: {},
     ignored_tool_call_indexes: new Set(),
     reasoning: '',
+    reasoningField: 'reasoning',
     finishReason: null,
     hasWarnedUnsupportedChoice: false,
   };
@@ -281,12 +288,12 @@ export async function* convertChatCompletionsStreamToResponses(
       }
     }
 
-    if (
-      'reasoning' in delta &&
-      delta.reasoning &&
-      typeof delta.reasoning === 'string'
-    ) {
-      state.reasoning += delta.reasoning;
+    for (const field of CHAT_COMPLETIONS_REASONING_FIELDS) {
+      const reasoningDelta = (delta as Record<string, unknown>)[field];
+      if (typeof reasoningDelta === 'string' && reasoningDelta !== '') {
+        state.reasoning += reasoningDelta;
+        state.reasoningField = field;
+      }
     }
 
     // Handle refusals
@@ -360,7 +367,7 @@ export async function* convertChatCompletionsStreamToResponses(
     outputs.push({
       type: 'reasoning',
       content: [],
-      rawContent: [{ type: 'reasoning_text', text: state.reasoning }],
+      rawContent: [createReasoningText(state.reasoning, state.reasoningField)],
     });
   }
 
