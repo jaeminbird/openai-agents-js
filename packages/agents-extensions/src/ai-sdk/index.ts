@@ -724,6 +724,30 @@ export function toolToLanguageV2Tool(
   throw new Error(`Unsupported tool type: ${JSON.stringify(tool)}`);
 }
 
+function applyToolStrictness<T>(
+  model: LanguageModelCompatible,
+  tools: T[],
+  strictTools: boolean | undefined,
+): T[] {
+  const provider = model.provider.toLowerCase();
+  const forwardStrict =
+    strictTools ??
+    (provider.startsWith('openai.') || provider.startsWith('azure.'));
+  if (forwardStrict) {
+    return tools;
+  }
+  return tools.map((tool) => {
+    if (
+      (tool as { type?: unknown }).type !== 'function' ||
+      !('strict' in (tool as object))
+    ) {
+      return tool;
+    }
+    const { strict: _strict, ...rest } = tool as { strict?: boolean };
+    return rest as T;
+  });
+}
+
 function getProviderToolPrefix(model: LanguageModelCompatible): string {
   const specificationVersion = getSpecVersion(model);
   if (specificationVersion !== 'v3' && specificationVersion !== 'v4') {
@@ -779,6 +803,19 @@ export type AiSdkModelOptions = {
    * streams. Incremental `output_text_delta` events are not transformed.
    */
   transformOutputText?: AiSdkOutputTextTransform;
+  /**
+   * Whether to send `strict: true` on function tools to the AI SDK provider.
+   *
+   * SDK function tools are strict by default (Zod tools always are), which describes the
+   * OpenAI strict schema they are converted to. Other providers treat the flag as an opt-in
+   * to their own constrained decoding, with its own limits: Anthropic compiles strict tools
+   * into a grammar that rejects `minLength`/`maximum`-style constraints and more than 16
+   * nullable parameters, and `@ai-sdk/deepseek` rejects strict tools outside its beta endpoint.
+   *
+   * Defaults to forwarding `strict` only for OpenAI providers (`openai.*`, `azure.*`).
+   * Set `true` to always forward it, or `false` to never forward it.
+   */
+  strictTools?: boolean;
 };
 
 /**
@@ -946,14 +983,18 @@ export class AiSdkModel implements Model {
           request,
           this.#logger,
         );
-        const tools = [
-          ...resolvedRequestedTools.tools.map((tool) =>
-            toolToLanguageV2Tool(this.#model, tool),
-          ),
-          ...resolvedRequestedTools.handoffs.map((handoff) =>
-            handoffToLanguageV2Tool(this.#model, handoff),
-          ),
-        ];
+        const tools = applyToolStrictness(
+          this.#model,
+          [
+            ...resolvedRequestedTools.tools.map((tool) =>
+              toolToLanguageV2Tool(this.#model, tool),
+            ),
+            ...resolvedRequestedTools.handoffs.map((handoff) =>
+              handoffToLanguageV2Tool(this.#model, handoff),
+            ),
+          ],
+          this.#options.strictTools,
+        );
 
         if (span && request.tracing === true) {
           span.spanData.input = input;
@@ -1238,14 +1279,18 @@ export class AiSdkModel implements Model {
         request,
         this.#logger,
       );
-      const tools = [
-        ...resolvedRequestedTools.tools.map((tool) =>
-          toolToLanguageV2Tool(this.#model, tool),
-        ),
-        ...resolvedRequestedTools.handoffs.map((handoff) =>
-          handoffToLanguageV2Tool(this.#model, handoff),
-        ),
-      ];
+      const tools = applyToolStrictness(
+        this.#model,
+        [
+          ...resolvedRequestedTools.tools.map((tool) =>
+            toolToLanguageV2Tool(this.#model, tool),
+          ),
+          ...resolvedRequestedTools.handoffs.map((handoff) =>
+            handoffToLanguageV2Tool(this.#model, handoff),
+          ),
+        ],
+        this.#options.strictTools,
+      );
 
       if (span && request.tracing === true) {
         span.spanData.input = input;
